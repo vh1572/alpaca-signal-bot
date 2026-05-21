@@ -1,0 +1,19 @@
+{
+  "name": "alpaca-signal-bot",
+  "version": "1.0.0",
+  "description": "Alpaca stock monitor with backtested direction-change signals and trailing stops",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "alpaca-signal-bot": "src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dry-run": "node src/index.js --dry-run"
+  },
+  "keywords": ["alpaca", "trading", "backtest"],
+  "license": "MIT"
+}
