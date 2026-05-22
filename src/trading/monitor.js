@@ -7,12 +7,15 @@ import {
 } from './marketHours.js';
 import { AlpacaApiError, formatErrorReport, wrapError } from '../alpaca/errors.js';
 import { logCheckDetails } from './logCheck.js';
+import { minimumBarCount, requiredBarCount, trimBars } from '../strategies/index.js';
 
 export class LiveMonitor {
   constructor(client, config, strategy) {
     this.client = client;
     this.config = config;
     this.strategy = strategy;
+    this.maxBars = requiredBarCount(strategy);
+    this.minBars = minimumBarCount(strategy);
     this.barHistory = [];
     this.trailingOrderId = null;
   }
@@ -27,21 +30,17 @@ export class LiveMonitor {
   }
 
   async fetchRecentBars() {
-    const end = new Date();
-    const start = new Date(end);
-    start.setDate(start.getDate() - 10);
-    const bars = await this.client.getBars(this.config.symbol, {
-      start: start.toISOString(),
-      end: end.toISOString(),
+    const bars = await this.client.getRecentBars(this.config.symbol, {
+      limit: this.maxBars,
       timeframe: '15Min',
     });
-    this.barHistory = bars;
-    return bars;
+    this.barHistory = trimBars(bars, this.maxBars);
+    return this.barHistory;
   }
 
   latestSignal() {
     const bars = this.barHistory;
-    if (bars.length < 30) return false;
+    if (bars.length < this.minBars) return false;
     const closes = bars.map((b) => b.c);
     const highs = bars.map((b) => b.h);
     const lows = bars.map((b) => b.l);
@@ -175,6 +174,7 @@ export class LiveMonitor {
   async run() {
     this.log(`Live monitor started — ${this.config.symbol}`);
     this.log(`Poll every ${this.config.intervalMin} min | trail ${this.config.trailPercent}%`);
+    this.log(`Bar window: keep ${this.maxBars}, need ≥${this.minBars} × 15Min bars`);
 
     let consecutiveErrors = 0;
 

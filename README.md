@@ -59,8 +59,9 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 1. **Startup** — Downloads 15Min bars, backtests all strategies, prints P/L table and the **selected winner**.
 2. **Live** — Aligns checks to 15-minute boundaries during **9:30–16:00 ET** weekdays.
 3. **Entry** — On bullish signal with no position: market buy + trailing stop sell.
-4. **EOD** — Closes positions and cancels trailing stops within `--eod-close-min` of the close.
-5. **Closed market** — Waits for next open via Alpaca clock API.
+4. **Memory** — After backtest, live mode fetches only the bar count required by the selected strategy (not the full backtest history).
+5. **EOD** — Closes positions and cancels trailing stops within `--eod-close-min` of the close.
+6. **Closed market** — Waits for next open via Alpaca clock API.
 
 ## Risk disclaimer
 

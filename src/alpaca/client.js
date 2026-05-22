@@ -125,4 +125,20 @@ export class AlpacaClient {
       params: { symbols: symbol, feed: 'iex' },
     });
   }
+
+  /** Fetch only the most recent N bars (minimal memory / API payload for live ticks). */
+  async getRecentBars(symbol, { limit, end, timeframe = '15Min' }) {
+    const data = await this.request(this.dataBase, '/v2/stocks/bars', {
+      params: {
+        symbols: symbol,
+        timeframe,
+        end: end ?? new Date().toISOString(),
+        limit,
+        adjustment: 'split',
+        feed: 'iex',
+      },
+    });
+    const bars = data?.bars?.[symbol] || [];
+    return bars.sort((a, b) => new Date(a.t) - new Date(b.t));
+  }
 }

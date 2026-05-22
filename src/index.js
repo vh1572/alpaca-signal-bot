@@ -4,7 +4,7 @@ import { parseConfig } from './config.js';
 import { AlpacaClient } from './alpaca/client.js';
 import { runBacktests, printBacktestResults } from './backtest/engine.js';
 import { LiveMonitor } from './trading/monitor.js';
-import { formatStrategy } from './strategies/index.js';
+import { formatStrategy, requiredBarCount } from './strategies/index.js';
 import { formatErrorReport } from './alpaca/errors.js';
 
 async function main() {
@@ -45,6 +45,9 @@ async function main() {
     process.exit(1);
   }
   printBacktestResults(results, best);
+  console.log(
+    `Live memory window: ${requiredBarCount(best.strategy)} bars (15Min) for ${best.strategy.id}\n`,
+  );
 
   console.log('Starting live price monitoring in 5 seconds...\n');
   await new Promise((r) => setTimeout(r, 5000));

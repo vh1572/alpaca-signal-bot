@@ -95,6 +95,42 @@ export const strategies = [
   },
 ];
 
+/** Extra bars beyond indicator minimum for stable EMA/RSI/MACD warmup */
+const WARMUP_BUFFER = 8;
+
+/**
+ * Minimum 15-min bars to fetch and keep in memory for live monitoring.
+ */
+/** Bars to request and retain (includes warmup buffer). */
+export function requiredBarCount(strategy) {
+  return minimumBarCount(strategy) + WARMUP_BUFFER;
+}
+
+/** Minimum bars before evaluateSignal is meaningful. */
+export function minimumBarCount(strategy) {
+  const p = strategy.params;
+  switch (strategy.id) {
+    case 'ema_crossover':
+      return p.slowPeriod + 2;
+    case 'rsi_reversal':
+      return p.period + 2;
+    case 'macd_crossover':
+      return p.slow + p.signal + 2;
+    case 'momentum_breakout':
+      return p.lookback + 2;
+    case 'bollinger_bounce':
+      return p.period + 2;
+    default:
+      return 30;
+  }
+}
+
+export function trimBars(bars, maxBars) {
+  if (!bars?.length) return [];
+  if (bars.length <= maxBars) return bars;
+  return bars.slice(-maxBars);
+}
+
 export function getStrategy(id) {
   return strategies.find((s) => s.id === id);
 }

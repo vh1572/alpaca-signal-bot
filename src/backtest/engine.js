@@ -109,7 +109,7 @@ export async function runBacktests(client, symbol, config) {
   });
 
   results.sort((a, b) => b.pnl - a.pnl);
-  return { bars, results, best: results[0] };
+  return { results, best: results[0] };
 }
 
 export function printBacktestResults(results, best) {
