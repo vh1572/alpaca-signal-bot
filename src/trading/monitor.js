@@ -5,6 +5,8 @@ import {
   formatEt,
   waitForMarketOpen,
 } from './marketHours.js';
+import { AlpacaApiError, formatErrorReport, wrapError } from '../alpaca/errors.js';
+import { logCheckDetails } from './logCheck.js';
 
 export class LiveMonitor {
   constructor(client, config, strategy) {
@@ -17,6 +19,11 @@ export class LiveMonitor {
 
   log(...args) {
     console.log(`[${formatEt(new Date())}]`, ...args);
+  }
+
+  logError(err, context) {
+    console.error(`[${formatEt(new Date())}] ERROR (${context}):`);
+    console.error(formatErrorReport(err, context));
   }
 
   async fetchRecentBars() {
@@ -42,8 +49,12 @@ export class LiveMonitor {
     return this.strategy.detect(closes, highs, lows, i, this.strategy.params);
   }
 
+  async getPosition() {
+    return this.client.getPosition(this.config.symbol);
+  }
+
   async hasOpenPosition() {
-    const pos = await this.client.getPosition(this.config.symbol);
+    const pos = await this.getPosition();
     return pos && Number(pos.qty) > 0;
   }
 
@@ -110,8 +121,11 @@ export class LiveMonitor {
       await this.client.closePosition(symbol);
       this.log(`Position closed for ${symbol}`);
     } catch (e) {
-      if (!String(e.message).includes('404')) throw e;
-      this.log('No position to close');
+      if (e instanceof AlpacaApiError && e.isNotFound()) {
+        this.log('No position to close');
+        return;
+      }
+      throw wrapError(e, `flatten ${symbol}`);
     }
   }
 
@@ -131,11 +145,17 @@ export class LiveMonitor {
 
     await this.fetchRecentBars();
     const signal = this.latestSignal();
-    const inPosition = await this.hasOpenPosition();
+    const position = await this.getPosition();
+    const inPosition = position && Number(position.qty) > 0;
 
-    this.log(
-      `Bars=${this.barHistory.length} signal=${signal} inPosition=${inPosition}`,
-    );
+    logCheckDetails(this.log.bind(this), {
+      symbol: this.config.symbol,
+      strategy: this.strategy,
+      bars: this.barHistory,
+      signal,
+      position,
+      clock,
+    });
 
     if (signal && !inPosition) {
       await this.placeBuy();
@@ -156,24 +176,55 @@ export class LiveMonitor {
     this.log(`Live monitor started — ${this.config.symbol}`);
     this.log(`Poll every ${this.config.intervalMin} min | trail ${this.config.trailPercent}%`);
 
+    let consecutiveErrors = 0;
+
     for (;;) {
-      const clock = await this.client.getClock();
+      let clock;
+      try {
+        clock = await this.client.getClock();
+        consecutiveErrors = 0;
+      } catch (e) {
+        consecutiveErrors++;
+        this.logError(e, 'market clock');
+        const waitMs = Math.min(60_000, 5000 * consecutiveErrors);
+        this.log(`Retrying clock in ${waitMs / 1000}s (${consecutiveErrors} consecutive errors)`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+
       if (!clock.is_open) {
-        await this.flatten('Market closed');
+        try {
+          await this.flatten('Market closed');
+        } catch (e) {
+          this.logError(e, 'flatten at close');
+        }
         this.log('Waiting for next market open...');
-        await waitForMarketOpen(this.client, (...a) => this.log(...a));
+        try {
+          await waitForMarketOpen(this.client, (...a) => this.log(...a));
+        } catch (e) {
+          this.logError(e, 'wait for market open');
+          await new Promise((r) => setTimeout(r, 30_000));
+        }
         continue;
       }
 
       const now = new Date();
-      if (shouldFlattenEod(now, this.config.eodCloseMin)) {
-        await this.flatten('EOD window');
-      } else if (isRegularSessionEt(now)) {
-        try {
+      try {
+        if (shouldFlattenEod(now, this.config.eodCloseMin)) {
+          await this.flatten('EOD window');
+        } else if (isRegularSessionEt(now)) {
           await this.tick();
-        } catch (e) {
-          this.log('Tick error:', e.message);
+        } else {
+          this.log('Outside regular session — idle until next interval');
         }
+        consecutiveErrors = 0;
+      } catch (e) {
+        consecutiveErrors++;
+        this.logError(e, 'tick');
+        const waitMs = Math.min(120_000, 10_000 * consecutiveErrors);
+        this.log(`Backing off ${waitMs / 1000}s after error (${consecutiveErrors} consecutive)`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
       }
 
       const waitMs = msUntilNextInterval(new Date(), this.config.intervalMin);

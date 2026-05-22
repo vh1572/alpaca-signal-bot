@@ -1,3 +1,5 @@
+import { AlpacaApiError } from './errors.js';
+
 export class AlpacaClient {
   constructor({ apiBase, dataBase, keyId, secretKey }) {
     this.apiBase = apiBase.replace(/\/$/, '');
@@ -32,8 +34,21 @@ export class AlpacaClient {
       data = text;
     }
     if (!res.ok) {
-      const msg = typeof data === 'object' ? JSON.stringify(data) : text;
-      throw new Error(`Alpaca ${method} ${path} failed (${res.status}): ${msg}`);
+      const apiMessage =
+        typeof data === 'object' && data?.message
+          ? data.message
+          : typeof data === 'object'
+            ? JSON.stringify(data)
+            : text;
+      throw new AlpacaApiError({
+        message: `Alpaca API error: ${apiMessage}`,
+        status: res.status,
+        method,
+        path,
+        base,
+        url: url.toString(),
+        body: data,
+      });
     }
     return data;
   }
@@ -48,7 +63,7 @@ export class AlpacaClient {
 
   getPosition(symbol) {
     return this.request(this.apiBase, `/v2/positions/${symbol}`).catch((e) => {
-      if (String(e.message).includes('404')) return null;
+      if (e instanceof AlpacaApiError && e.isNotFound()) return null;
       throw e;
     });
   }

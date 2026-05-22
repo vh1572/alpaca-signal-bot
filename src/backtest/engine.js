@@ -1,4 +1,5 @@
 import { strategies, formatStrategy } from '../strategies/index.js';
+import { wrapError } from '../alpaca/errors.js';
 
 function barCloses(bars) {
   return bars.map((b) => b.c);
@@ -85,11 +86,16 @@ export async function runBacktests(client, symbol, config) {
   start.setDate(start.getDate() - Math.ceil(config.backtestDays * 1.5));
 
   console.log(`\nFetching ${config.backtestDays}d of 15Min bars for ${symbol}...`);
-  const bars = await client.getBars(symbol, {
-    start: start.toISOString(),
-    end: end.toISOString(),
-    timeframe: '15Min',
-  });
+  let bars;
+  try {
+    bars = await client.getBars(symbol, {
+      start: start.toISOString(),
+      end: end.toISOString(),
+      timeframe: '15Min',
+    });
+  } catch (err) {
+    throw wrapError(err, `fetching historical bars for ${symbol}`);
+  }
 
   if (bars.length < 50) {
     throw new Error(`Insufficient historical bars (${bars.length}). Need a funded data plan or different symbol.`);

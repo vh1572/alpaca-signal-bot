@@ -5,6 +5,7 @@ import { AlpacaClient } from './alpaca/client.js';
 import { runBacktests, printBacktestResults } from './backtest/engine.js';
 import { LiveMonitor } from './trading/monitor.js';
 import { formatStrategy } from './strategies/index.js';
+import { formatErrorReport } from './alpaca/errors.js';
 
 async function main() {
   const config = parseConfig();
@@ -26,10 +27,23 @@ async function main() {
   console.log(`Mode:       ${config.dryRun ? 'DRY-RUN (no orders)' : config.paper ? 'PAPER' : 'LIVE'}`);
   console.log('═══════════════════════════════════════════\n');
 
-  const account = await client.getAccount();
+  let account;
+  try {
+    account = await client.getAccount();
+  } catch (err) {
+    console.error(formatErrorReport(err, 'fetching account'));
+    process.exit(1);
+  }
   console.log(`Account: ${account.id} | equity: $${Number(account.equity).toFixed(2)} | status: ${account.status}\n`);
 
-  const { results, best } = await runBacktests(client, config.symbol, config);
+  let results;
+  let best;
+  try {
+    ({ results, best } = await runBacktests(client, config.symbol, config));
+  } catch (err) {
+    console.error(formatErrorReport(err, `backtesting ${config.symbol}`));
+    process.exit(1);
+  }
   printBacktestResults(results, best);
 
   console.log('Starting live price monitoring in 5 seconds...\n');
@@ -40,6 +54,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Fatal:', err.message);
+  console.error('\n═══ Fatal error ═══');
+  console.error(formatErrorReport(err));
   process.exit(1);
 });
