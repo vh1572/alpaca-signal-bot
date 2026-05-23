@@ -2,8 +2,10 @@ import {
   isRegularSessionEt,
   shouldFlattenEod,
   msUntilNextInterval,
+  msUntilMarketWake,
   formatEt,
-  waitForMarketOpen,
+  formatDuration,
+  symbolJitterMs,
 } from './marketHours.js';
 import { AlpacaApiError, formatErrorReport, wrapError } from '../alpaca/errors.js';
 import { logCheckDetails } from './logCheck.js';
@@ -18,6 +20,40 @@ export class LiveMonitor {
     this.minBars = minimumBarCount(strategy);
     this.barHistory = [];
     this.trailingOrderId = null;
+    this.didFlattenForClose = false;
+  }
+
+  clockRetryDelayMs(consecutiveErrors) {
+    const base = this.config.clockRetryBaseSec * 1000;
+    const max = this.config.clockRetryMaxSec * 1000;
+    const backoff = Math.min(max, base * consecutiveErrors);
+    const jitter = symbolJitterMs(this.config.symbol, 30_000);
+    return backoff + jitter;
+  }
+
+  tickRetryDelayMs(consecutiveErrors) {
+    const base = 60_000;
+    const max = 300_000;
+    const backoff = Math.min(max, base * consecutiveErrors);
+    const jitter = symbolJitterMs(this.config.symbol, 20_000);
+    return backoff + jitter;
+  }
+
+  async sleepWhileClosed(clock) {
+    const sleepMs = msUntilMarketWake(clock.next_open, this.config.symbol, {
+      wakeBeforeMin: this.config.closedWakeBeforeMin,
+      jitterMaxSec: this.config.closedJitterSec,
+    });
+    const nextOpen = formatEt(new Date(clock.next_open));
+    if (sleepMs >= 60_000) {
+      this.log(
+        `Market closed until ${nextOpen} ET — sleeping ${formatDuration(sleepMs)} (then recheck)`,
+      );
+      await new Promise((r) => setTimeout(r, sleepMs));
+    } else {
+      this.log(`Market closed — next open ${nextOpen} ET — rechecking in ${formatDuration(sleepMs)}`);
+      await new Promise((r) => setTimeout(r, Math.max(5000, sleepMs)));
+    }
   }
 
   log(...args) {
@@ -186,27 +222,28 @@ export class LiveMonitor {
       } catch (e) {
         consecutiveErrors++;
         this.logError(e, 'market clock');
-        const waitMs = Math.min(60_000, 5000 * consecutiveErrors);
-        this.log(`Retrying clock in ${waitMs / 1000}s (${consecutiveErrors} consecutive errors)`);
+        const waitMs = this.clockRetryDelayMs(consecutiveErrors);
+        this.log(
+          `Retrying clock in ${formatDuration(waitMs)} (${consecutiveErrors} consecutive errors)`,
+        );
         await new Promise((r) => setTimeout(r, waitMs));
         continue;
       }
 
       if (!clock.is_open) {
-        try {
-          await this.flatten('Market closed');
-        } catch (e) {
-          this.logError(e, 'flatten at close');
+        if (!this.didFlattenForClose) {
+          try {
+            await this.flatten('Market closed');
+          } catch (e) {
+            this.logError(e, 'flatten at close');
+          }
+          this.didFlattenForClose = true;
         }
-        this.log('Waiting for next market open...');
-        try {
-          await waitForMarketOpen(this.client, (...a) => this.log(...a));
-        } catch (e) {
-          this.logError(e, 'wait for market open');
-          await new Promise((r) => setTimeout(r, 30_000));
-        }
+        await this.sleepWhileClosed(clock);
         continue;
       }
+
+      this.didFlattenForClose = false;
 
       const now = new Date();
       try {
@@ -221,8 +258,10 @@ export class LiveMonitor {
       } catch (e) {
         consecutiveErrors++;
         this.logError(e, 'tick');
-        const waitMs = Math.min(120_000, 10_000 * consecutiveErrors);
-        this.log(`Backing off ${waitMs / 1000}s after error (${consecutiveErrors} consecutive)`);
+        const waitMs = this.tickRetryDelayMs(consecutiveErrors);
+        this.log(
+          `Backing off ${formatDuration(waitMs)} after tick error (${consecutiveErrors} consecutive)`,
+        );
         await new Promise((r) => setTimeout(r, waitMs));
         continue;
       }

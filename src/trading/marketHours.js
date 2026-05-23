@@ -65,13 +65,48 @@ export function formatEt(date) {
   }).format(date);
 }
 
+/** Deterministic per-symbol delay to spread API calls across many instances. */
+export function symbolJitterMs(symbol, maxMs) {
+  if (!symbol || maxMs <= 0) return 0;
+  let h = 0;
+  for (let i = 0; i < symbol.length; i++) {
+    h = (Math.imul(31, h) + symbol.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h) % maxMs;
+}
+
+/**
+ * Ms to sleep until wakeBeforeMin minutes before next_open, plus per-symbol jitter.
+ */
+export function msUntilMarketWake(
+  nextOpenIso,
+  symbol,
+  { wakeBeforeMin = 2, jitterMaxSec = 180 } = {},
+) {
+  const wakeBeforeMs = wakeBeforeMin * 60 * 1000;
+  const jitter = symbolJitterMs(symbol, jitterMaxSec * 1000);
+  const target = new Date(nextOpenIso).getTime() - wakeBeforeMs + jitter;
+  return Math.max(0, target - Date.now());
+}
+
+export function formatDuration(ms) {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.round((ms % 3_600_000) / 60_000);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/** @deprecated Use msUntilMarketWake + sleep in monitor; kept for compatibility. */
 export async function waitForMarketOpen(client, log = console.log) {
+  const clock = await client.getClock();
+  if (clock.is_open) return clock;
+  const sleepMs = msUntilMarketWake(clock.next_open, '');
+  log(`Market closed. Next open: ${formatEt(new Date(clock.next_open))} ET`);
+  await new Promise((r) => setTimeout(r, sleepMs));
   for (;;) {
-    const clock = await client.getClock();
-    if (clock.is_open) return clock;
-    const next = new Date(clock.next_open);
-    log(`Market closed. Next open: ${formatEt(next)} ET`);
-    const sleepMs = Math.min(60_000, Math.max(5000, next - Date.now()));
-    await new Promise((r) => setTimeout(r, sleepMs));
+    const c = await client.getClock();
+    if (c.is_open) return c;
+    await new Promise((r) => setTimeout(r, 30_000));
   }
 }

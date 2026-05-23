@@ -53,6 +53,9 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 | `--backtest-days` | `60` | History length for strategy selection |
 | `--eod-close-min` | `15` | Flatten when this many minutes remain before 16:00 ET |
 | `--dry-run` | off | Log only, no orders |
+| `--clock-retry-base-sec` | `60` | First `/v2/clock` retry delay |
+| `--clock-retry-max-sec` | `600` | Max clock retry delay |
+| `--closed-jitter-sec` | `180` | Spread wake times (0–N sec per symbol) |
 
 ## Behavior
 
@@ -61,7 +64,7 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 3. **Entry** — On bullish signal with no position: market buy + trailing stop sell.
 4. **Memory** — After backtest, live mode fetches only the bar count required by the selected strategy (not the full backtest history).
 5. **EOD** — Closes positions and cancels trailing stops within `--eod-close-min` of the close.
-6. **Closed market** — Waits for next open via Alpaca clock API.
+6. **Closed market** — Flattens once, then sleeps until just before `next_open` (per-symbol jitter spreads load when running many instances). Clock retries default to 60s–600s backoff.
 
 ## Risk disclaimer
 
