@@ -78,6 +78,7 @@ export function parseConfig() {
     minNotional: parseNumber('--min-notional', envNum('APCA_MIN_NOTIONAL', 0)),
     trailMin: parseNumber('--trail-min', envNum('APCA_TRAIL_MIN', 1)),
     trailMax: parseNumber('--trail-max', envNum('APCA_TRAIL_MAX', 10)),
+    trailStep: parseNumber('--trail-step', envNum('APCA_TRAIL_STEP', 2)),
     intervalMin: parseNumber('--interval-min', 15),
     trailPercent: parseNumber('--trail-percent', 2),
     backtestDays: parseNumber('--backtest-days', 60),
@@ -107,6 +108,7 @@ Options:
   --min-notional N          Buy at least $N per entry (default: 0 = use --qty)
   --trail-min N             Min $ trail distance for backtest (default: 1)
   --trail-max N             Max $ trail distance for backtest (default: 10)
+  --trail-step N            Trail $ step for backtest (default: 2 → 1,3,5,7,9)
   --interval-min N          Poll interval in minutes (default: 15)
   --trail-percent P         Trailing stop % when --min-notional is 0 (default: 2)
   --backtest-days N         Historical days for backtest (default: 60)

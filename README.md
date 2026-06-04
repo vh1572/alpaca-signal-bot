@@ -52,6 +52,7 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 | `SYMBOL` | (required) | Ticker to trade |
 | `--min-notional` | `0` | Min **dollar** size per buy; enables $ trail backtest |
 | `--trail-min` / `--trail-max` | `1` / `10` | Backtest range for **$** trailing stop |
+| `--trail-step` | `2` | Test trails 1,3,5… (fewer sims → less RAM) |
 | `--qty` | `1` | Shares per entry when `--min-notional` is 0 |
 | `--interval-min` | `15` | Poll interval (minutes) |
 | `--trail-percent` | `2` | Trailing stop % when `--min-notional` is 0 |
@@ -64,7 +65,7 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 
 ## Behavior
 
-1. **Startup** — Downloads 15Min bars, backtests all strategies, prints P/L table and the **selected winner**.
+1. **Startup** — Downloads 15Min bars, picks best strategy then best $ trail (memory-efficient), prints P/L for 1 share and notional.
 2. **Live** — Aligns checks to 15-minute boundaries during **9:30–16:00 ET** weekdays.
 3. **Entry** — On bullish signal: market buy (`notional` or `qty`) + trailing stop (`trail_price` $ or `trail_percent`).
 4. **Memory** — After backtest, live mode fetches only the bar count required by the selected strategy (not the full backtest history).

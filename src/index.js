@@ -43,10 +43,10 @@ async function main() {
   }
   console.log(`Account: ${account.id} | equity: $${Number(account.equity).toFixed(2)} | status: ${account.status}\n`);
 
-  let results;
   let best;
+  let topResults;
   try {
-    ({ results, best } = await runBacktests(client, config.symbol, config));
+    ({ best, topResults } = await runBacktests(client, config.symbol, config));
   } catch (err) {
     console.error(formatErrorReport(err, `backtesting ${config.symbol}`));
     process.exit(1);
@@ -55,7 +55,8 @@ async function main() {
   config.trailDollars = best.trailDollars ?? null;
   config.useNotional = useNotional;
 
-  printBacktestResults(results, best, config);
+  printBacktestResults(topResults, best, config);
+  topResults = null;
   console.log(
     `Live memory window: ${requiredBarCount(best.strategy)} bars (15Min) for ${best.strategy.id}\n`,
   );
