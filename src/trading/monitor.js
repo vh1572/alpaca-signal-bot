@@ -145,6 +145,14 @@ export class LiveMonitor {
     return q > 0 ? q : null;
   }
 
+  /** Alpaca requires DAY tif for fractional sell orders (notional entries). */
+  trailingStopTimeInForce(sellQty) {
+    const { useNotional } = this.config;
+    if (useNotional) return 'day';
+    if (sellQty != null && !Number.isInteger(sellQty)) return 'day';
+    return 'gtc';
+  }
+
   async placeTrailingStop() {
     const { symbol, qty, trailPercent, trailDollars, useNotional, dryRun } = this.config;
     let sellQty = await this.positionQty();
@@ -152,12 +160,17 @@ export class LiveMonitor {
       this.log('No position qty for trailing stop — skipping');
       return null;
     }
+    const tif = this.trailingStopTimeInForce(sellQty);
     if (dryRun) {
       sellQty = sellQty ?? qty;
       if (useNotional && trailDollars) {
-        this.log(`[DRY-RUN] Would place trailing_stop $${trailDollars} on ${sellQty} ${symbol}`);
+        this.log(
+          `[DRY-RUN] Would place trailing_stop $${trailDollars} on ${sellQty} ${symbol} (${tif})`,
+        );
       } else {
-        this.log(`[DRY-RUN] Would place trailing_stop ${trailPercent}% on ${sellQty} ${symbol}`);
+        this.log(
+          `[DRY-RUN] Would place trailing_stop ${trailPercent}% on ${sellQty} ${symbol} (${tif})`,
+        );
       }
       return { id: 'dry-run-trail' };
     }
@@ -169,7 +182,7 @@ export class LiveMonitor {
           side: 'sell',
           type: 'trailing_stop',
           trail_price: String(trailDollars),
-          time_in_force: 'gtc',
+          time_in_force: tif,
         }
       : {
           symbol,
@@ -177,12 +190,12 @@ export class LiveMonitor {
           side: 'sell',
           type: 'trailing_stop',
           trail_percent: String(trailPercent),
-          time_in_force: 'gtc',
+          time_in_force: tif,
         };
     const placed = await this.client.createOrder(order);
     this.trailingOrderId = placed.id;
     const trailLabel = useNotional && trailDollars ? `$${trailDollars}` : `${trailPercent}%`;
-    this.log(`Trailing stop placed: ${placed.id} (${trailLabel}, qty=${sellQty})`);
+    this.log(`Trailing stop placed: ${placed.id} (${trailLabel}, qty=${sellQty}, ${tif})`);
     return placed;
   }
 
@@ -238,14 +251,18 @@ export class LiveMonitor {
       await this.placeBuy();
       await new Promise((r) => setTimeout(r, 2000));
       await this.placeTrailingStop();
-    } else if (inPosition && !this.trailingOrderId) {
+    } else if (inPosition) {
       const orders = await this.client.listOrders({
         status: 'open',
         symbols: this.config.symbol,
       });
       const trail = orders.find((o) => o.type === 'trailing_stop');
-      if (trail) this.trailingOrderId = trail.id;
-      else await this.placeTrailingStop();
+      if (trail) {
+        this.trailingOrderId = trail.id;
+      } else {
+        this.trailingOrderId = null;
+        await this.placeTrailingStop();
+      }
     }
   }
 

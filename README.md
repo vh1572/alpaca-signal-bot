@@ -67,7 +67,7 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 
 1. **Startup** — Downloads 15Min bars, picks best strategy then best $ trail (memory-efficient), prints P/L for 1 share and notional.
 2. **Live** — Aligns checks to 15-minute boundaries during **9:30–16:00 ET** weekdays.
-3. **Entry** — On bullish signal: market buy (`notional` or `qty`) + trailing stop (`trail_price` $ or `trail_percent`).
+3. **Entry** — On bullish signal: market buy (`notional` or `qty`) + trailing stop (`trail_price` $ or `trail_percent`). Fractional/notional positions use **DAY** trailing stops (Alpaca requirement).
 4. **Memory** — After backtest, live mode fetches only the bar count required by the selected strategy (not the full backtest history).
 5. **EOD** — Closes positions and cancels trailing stops within `--eod-close-min` of the close.
 6. **Closed market** — Flattens once, then sleeps until just before `next_open` (per-symbol jitter spreads load when running many instances). Clock retries default to 60s–600s backoff.
