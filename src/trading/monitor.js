@@ -21,6 +21,14 @@ export class LiveMonitor {
     this.barHistory = [];
     this.trailingOrderId = null;
     this.didFlattenForClose = false;
+    this.softwareTrail = false;
+    this.trailHighWater = null;
+  }
+
+  /** Alpaca does not support trailing_stop on fractional / notional positions. */
+  needsSoftwareTrail(sellQty) {
+    if (this.config.useNotional) return true;
+    return sellQty != null && !Number.isInteger(sellQty);
   }
 
   clockRetryDelayMs(consecutiveErrors) {
@@ -145,58 +153,107 @@ export class LiveMonitor {
     return q > 0 ? q : null;
   }
 
-  /** Alpaca requires DAY tif for fractional sell orders (notional entries). */
-  trailingStopTimeInForce(sellQty) {
-    const { useNotional } = this.config;
-    if (useNotional) return 'day';
-    if (sellQty != null && !Number.isInteger(sellQty)) return 'day';
-    return 'gtc';
+  trailStopPrice(highWater) {
+    const { trailDollars, trailPercent } = this.config;
+    if (trailDollars != null && trailDollars > 0) {
+      return highWater - trailDollars;
+    }
+    return highWater * (1 - (trailPercent ?? 2) / 100);
+  }
+
+  trailLabel() {
+    const { trailDollars, trailPercent } = this.config;
+    return trailDollars != null && trailDollars > 0 ? `$${trailDollars}` : `${trailPercent}%`;
+  }
+
+  async manageSoftwareTrail(position) {
+    const last = this.barHistory[this.barHistory.length - 1];
+    if (!last) return;
+
+    const mkt = Number(position.current_price) || last.c;
+    const entry = Number(position.avg_entry_price) || mkt;
+    if (this.trailHighWater == null) {
+      this.trailHighWater = Math.max(entry, mkt, last.h);
+      this.log(`Software trail armed — ${this.trailLabel()} below $${this.trailHighWater.toFixed(2)}`);
+    } else {
+      this.trailHighWater = Math.max(this.trailHighWater, mkt, last.h);
+    }
+
+    const stop = this.trailStopPrice(this.trailHighWater);
+    if (last.l <= stop || mkt <= stop) {
+      await this.flatten(`software trail hit (${this.trailLabel()}, stop $${stop.toFixed(2)})`);
+      return;
+    }
+    this.log(
+      `Software trail: hwm $${this.trailHighWater.toFixed(2)} | stop $${stop.toFixed(2)} | mkt $${mkt.toFixed(2)}`,
+    );
   }
 
   async placeTrailingStop() {
-    const { symbol, qty, trailPercent, trailDollars, useNotional, dryRun } = this.config;
+    const { symbol, qty, trailDollars, trailPercent, useNotional, dryRun } = this.config;
     let sellQty = await this.positionQty();
     if (!sellQty && !dryRun) {
       this.log('No position qty for trailing stop — skipping');
       return null;
     }
-    const tif = this.trailingStopTimeInForce(sellQty);
+
+    if (this.needsSoftwareTrail(sellQty)) {
+      this.softwareTrail = true;
+      this.trailingOrderId = null;
+      this.trailHighWater = null;
+      if (dryRun) {
+        sellQty = sellQty ?? qty;
+        this.log(
+          `[DRY-RUN] Software-managed trail ${this.trailLabel()} on ${sellQty} ${symbol}`,
+        );
+        return { id: 'dry-run-software-trail' };
+      }
+      this.log(
+        `Software-managed trail ${this.trailLabel()} on ${sellQty} ${symbol} (fractional — no broker trailing_stop)`,
+      );
+      return { id: 'software-trail' };
+    }
+
+    const useDollarTrail = trailDollars != null && trailDollars > 0;
     if (dryRun) {
       sellQty = sellQty ?? qty;
-      if (useNotional && trailDollars) {
-        this.log(
-          `[DRY-RUN] Would place trailing_stop $${trailDollars} on ${sellQty} ${symbol} (${tif})`,
-        );
-      } else {
-        this.log(
-          `[DRY-RUN] Would place trailing_stop ${trailPercent}% on ${sellQty} ${symbol} (${tif})`,
-        );
-      }
+      const trailDesc = useDollarTrail ? `$${trailDollars}` : `${trailPercent}%`;
+      this.log(
+        `[DRY-RUN] Would place trailing_stop ${trailDesc} on ${sellQty} ${symbol} (gtc)`,
+      );
       return { id: 'dry-run-trail' };
     }
     await this.cancelTrailingOrders();
-    const order = useNotional && trailDollars
-      ? {
-          symbol,
-          qty: String(sellQty),
-          side: 'sell',
-          type: 'trailing_stop',
-          trail_price: String(trailDollars),
-          time_in_force: tif,
-        }
-      : {
-          symbol,
-          qty: String(sellQty),
-          side: 'sell',
-          type: 'trailing_stop',
-          trail_percent: String(trailPercent),
-          time_in_force: tif,
-        };
-    const placed = await this.client.createOrder(order);
+    const placed = await this.client.createOrder(
+      useDollarTrail
+        ? {
+            symbol,
+            qty: String(sellQty),
+            side: 'sell',
+            type: 'trailing_stop',
+            trail_price: String(trailDollars),
+            time_in_force: 'gtc',
+          }
+        : {
+            symbol,
+            qty: String(sellQty),
+            side: 'sell',
+            type: 'trailing_stop',
+            trail_percent: String(trailPercent),
+            time_in_force: 'gtc',
+          },
+    );
     this.trailingOrderId = placed.id;
-    const trailLabel = useNotional && trailDollars ? `$${trailDollars}` : `${trailPercent}%`;
-    this.log(`Trailing stop placed: ${placed.id} (${trailLabel}, qty=${sellQty}, ${tif})`);
+    this.softwareTrail = false;
+    const trailDesc = useDollarTrail ? `$${trailDollars}` : `${trailPercent}%`;
+    this.log(`Trailing stop placed: ${placed.id} (${trailDesc}, qty=${sellQty}, gtc)`);
     return placed;
+  }
+
+  resetTrailState() {
+    this.trailingOrderId = null;
+    this.softwareTrail = false;
+    this.trailHighWater = null;
   }
 
   async flatten(reason) {
@@ -210,9 +267,11 @@ export class LiveMonitor {
     try {
       await this.client.closePosition(symbol);
       this.log(`Position closed for ${symbol}`);
+      this.resetTrailState();
     } catch (e) {
       if (e instanceof AlpacaApiError && e.isNotFound()) {
         this.log('No position to close');
+        this.resetTrailState();
         return;
       }
       throw wrapError(e, `flatten ${symbol}`);
@@ -250,18 +309,25 @@ export class LiveMonitor {
     if (signal && !inPosition) {
       await this.placeBuy();
       await new Promise((r) => setTimeout(r, 2000));
+      this.resetTrailState();
       await this.placeTrailingStop();
     } else if (inPosition) {
-      const orders = await this.client.listOrders({
-        status: 'open',
-        symbols: this.config.symbol,
-      });
-      const trail = orders.find((o) => o.type === 'trailing_stop');
-      if (trail) {
-        this.trailingOrderId = trail.id;
+      const sellQty = await this.positionQty();
+      if (this.needsSoftwareTrail(sellQty)) {
+        if (!this.softwareTrail) await this.placeTrailingStop();
+        await this.manageSoftwareTrail(position);
       } else {
-        this.trailingOrderId = null;
-        await this.placeTrailingStop();
+        const orders = await this.client.listOrders({
+          status: 'open',
+          symbols: this.config.symbol,
+        });
+        const trail = orders.find((o) => o.type === 'trailing_stop');
+        if (trail) {
+          this.trailingOrderId = trail.id;
+        } else {
+          this.trailingOrderId = null;
+          await this.placeTrailingStop();
+        }
       }
     }
   }
@@ -271,8 +337,10 @@ export class LiveMonitor {
     this.log(`Poll every ${this.config.intervalMin} min`);
     if (this.config.useNotional) {
       this.log(
-        `Entry $${this.config.minNotional} notional | trail $${this.config.trailDollars} (from backtest)`,
+        `Entry $${this.config.minNotional} notional | trail $${this.config.trailDollars} (software-managed on fractional)`,
       );
+    } else if (this.config.trailDollars) {
+      this.log(`Entry ${this.config.qty} shares | trail $${this.config.trailDollars} (from backtest)`);
     }
     this.log(`Bar window: keep ${this.maxBars}, need ≥${this.minBars} × 15Min bars`);
 

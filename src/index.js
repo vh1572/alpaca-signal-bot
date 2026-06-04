@@ -27,7 +27,7 @@ async function main() {
     console.log(`Trail:      $${config.trailMin}–$${config.trailMax} (backtest picks best)`);
   } else {
     console.log(`Qty:        ${config.qty} shares`);
-    console.log(`Trail stop: ${config.trailPercent}%`);
+    console.log(`Trail:      $${config.trailMin}–$${config.trailMax} (backtest picks best)`);
   }
   console.log(`Interval:   ${config.intervalMin} minutes`);
   console.log(`API:        ${config.apiBase}`);

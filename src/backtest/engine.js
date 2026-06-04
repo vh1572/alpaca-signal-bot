@@ -151,6 +151,70 @@ function pickBest(list, useNotional) {
   return best;
 }
 
+/** Pick best strategy (mid-trail), then sweep $ trail on winner — qty or notional sizing. */
+function runTwoPhaseTrailBacktest(ctx, config, sizing) {
+  const useNotional = config.minNotional > 0;
+  const trailStep = config.trailStep ?? 1;
+  const trails = trailDollarRange(config.trailMin, config.trailMax, trailStep);
+  const midTrail = trails[Math.floor(trails.length / 2)];
+  const sizeLabel = useNotional
+    ? `$${config.minNotional} notional`
+    : `${config.qty} share(s)`;
+
+  console.log(
+    `Backtest: ${strategies.length} strategies, then trail $${trails[0]}–$${trails.at(-1)}` +
+      (trailStep > 1 ? ` (step ${trailStep})` : '') +
+      ` on winner @ ${sizeLabel}...\n`,
+  );
+
+  const simBase = {
+    ...sizing,
+    displayNotional: notionalDisplayAmount(config),
+  };
+
+  const strategyScores = [];
+  for (const strategy of strategies) {
+    const signals = buildEntrySignals(strategy, ctx.closes, ctx.highs, ctx.lows);
+    const result = simulateWithSignals(ctx, signals, {
+      ...simBase,
+      trailDollars: midTrail,
+    });
+    strategyScores.push({ strategy, trailDollars: midTrail, signals, ...result });
+  }
+
+  const bestStrategyRow = pickBest(strategyScores, useNotional);
+  const allResults = [];
+
+  for (const trailDollars of trails) {
+    const result = simulateWithSignals(ctx, bestStrategyRow.signals, {
+      ...simBase,
+      trailDollars,
+    });
+    allResults.push({
+      strategy: bestStrategyRow.strategy,
+      trailDollars,
+      ...result,
+    });
+  }
+
+  for (const row of strategyScores) {
+    if (row.strategy.id !== bestStrategyRow.strategy.id) {
+      allResults.push({
+        strategy: row.strategy,
+        trailDollars: midTrail,
+        pnl: row.pnl,
+        pnlOneShare: row.pnlOneShare,
+        pnlNotional: row.pnlNotional,
+        trades: row.trades,
+        wins: row.wins,
+        winRate: row.winRate,
+      });
+    }
+  }
+
+  return allResults;
+}
+
 export async function runBacktests(client, symbol, config) {
   const end = new Date();
   const start = new Date(end);
@@ -180,76 +244,10 @@ export async function runBacktests(client, symbol, config) {
   bars = null; // allow GC of raw bar objects before heavy sim loop
 
   const useNotional = config.minNotional > 0;
-  const trailStep = config.trailStep ?? 1;
-  const allResults = [];
-
-  if (useNotional) {
-    const trails = trailDollarRange(config.trailMin, config.trailMax, trailStep);
-    const midTrail = trails[Math.floor(trails.length / 2)];
-
-    console.log(
-      `Backtest: ${strategies.length} strategies, then trail $${trails[0]}–$${trails.at(-1)}` +
-        (trailStep > 1 ? ` (step ${trailStep})` : '') +
-        ` on winner @ $${config.minNotional} notional...\n`,
-    );
-
-    const strategyScores = [];
-    for (const strategy of strategies) {
-      const signals = buildEntrySignals(strategy, ctx.closes, ctx.highs, ctx.lows);
-      const result = simulateWithSignals(ctx, signals, {
-        minNotional: config.minNotional,
-        trailDollars: midTrail,
-        displayNotional: config.minNotional,
-      });
-      strategyScores.push({
-        strategy,
-        trailDollars: midTrail,
-        signals,
-        ...result,
-      });
-    }
-
-    const bestStrategyRow = pickBest(strategyScores, true);
-    const winnerSignals = bestStrategyRow.signals;
-
-    for (const trailDollars of trails) {
-      const result = simulateWithSignals(ctx, winnerSignals, {
-        minNotional: config.minNotional,
-        trailDollars,
-        displayNotional: config.minNotional,
-      });
-      allResults.push({
-        strategy: bestStrategyRow.strategy,
-        trailDollars,
-        ...result,
-      });
-    }
-
-    for (const row of strategyScores) {
-      if (row.strategy.id !== bestStrategyRow.strategy.id) {
-        allResults.push({
-          strategy: row.strategy,
-          trailDollars: midTrail,
-          pnl: row.pnl,
-          pnlOneShare: row.pnlOneShare,
-          pnlNotional: row.pnlNotional,
-          trades: row.trades,
-          wins: row.wins,
-          winRate: row.winRate,
-        });
-      }
-    }
-  } else {
-    for (const strategy of strategies) {
-      const signals = buildEntrySignals(strategy, ctx.closes, ctx.highs, ctx.lows);
-      const result = simulateWithSignals(ctx, signals, {
-        qty: config.qty,
-        trailPercent: config.trailPercent,
-        displayNotional: notionalDisplayAmount(config),
-      });
-      allResults.push({ strategy, trailDollars: null, ...result });
-    }
-  }
+  const sizing = useNotional
+    ? { minNotional: config.minNotional }
+    : { qty: config.qty };
+  const allResults = runTwoPhaseTrailBacktest(ctx, config, sizing);
 
   allResults.sort((a, b) => comparePnl(a, b, useNotional));
   const best = allResults[0];
@@ -276,12 +274,18 @@ export function formatFinalBacktestPnl(r, config) {
   ].join('\n');
 }
 
+function trailResultLabel(r, config) {
+  return r.trailDollars != null
+    ? ` trail $${r.trailDollars}`
+    : ` trail ${config.trailPercent}%`;
+}
+
 export function printBacktestResults(topResults, best, config) {
   const useNotional = config.minNotional > 0;
   console.log('── Backtest results (top 10) ──');
   for (const r of topResults) {
     const marker = r === best ? ' ★' : '';
-    const trailLabel = useNotional ? ` trail $${r.trailDollars}` : ` trail ${config.trailPercent}%`;
+    const trailLabel = trailResultLabel(r, config);
     console.log(
       `${formatStrategy(r.strategy)}${trailLabel}${marker}\n` +
         `  ${formatPnlLine(r, config)}`,
@@ -291,9 +295,14 @@ export function printBacktestResults(topResults, best, config) {
   console.log(formatStrategy(best.strategy));
   if (useNotional) {
     console.log(`Min notional: $${config.minNotional}`);
-    console.log(`Trailing stop:  $${best.trailDollars} (from backtest range $${config.trailMin}–$${config.trailMax})`);
   } else {
     console.log(`Qty per entry:  ${config.qty} shares`);
+  }
+  if (best.trailDollars != null) {
+    console.log(
+      `Trailing stop:  $${best.trailDollars} (from backtest range $${config.trailMin}–$${config.trailMax})`,
+    );
+  } else {
     console.log(`Trailing stop:  ${config.trailPercent}%`);
   }
   console.log(formatFinalBacktestPnl(best, config));

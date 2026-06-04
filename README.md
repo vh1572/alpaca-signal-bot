@@ -55,7 +55,7 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 | `--trail-step` | `2` | Test trails 1,3,5… (fewer sims → less RAM) |
 | `--qty` | `1` | Shares per entry when `--min-notional` is 0 |
 | `--interval-min` | `15` | Poll interval (minutes) |
-| `--trail-percent` | `2` | Trailing stop % when `--min-notional` is 0 |
+| `--trail-percent` | `2` | Fallback % trail only if dollar trail unavailable |
 | `--backtest-days` | `60` | History length for strategy selection |
 | `--eod-close-min` | `15` | Flatten when this many minutes remain before 16:00 ET |
 | `--dry-run` | off | Log only, no orders |
@@ -67,7 +67,7 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 
 1. **Startup** — Downloads 15Min bars, picks best strategy then best $ trail (memory-efficient), prints P/L for 1 share and notional.
 2. **Live** — Aligns checks to 15-minute boundaries during **9:30–16:00 ET** weekdays.
-3. **Entry** — On bullish signal: market buy (`notional` or `qty`) + trailing stop (`trail_price` $ or `trail_percent`). Fractional/notional positions use **DAY** trailing stops (Alpaca requirement).
+3. **Entry** — On bullish signal: market buy (`notional` or `qty`). **$1–$10 trail** is chosen in backtest and used live (`trail_price` on whole shares). **Fractional/notional** uses a **software-managed** $ trail.
 4. **Memory** — After backtest, live mode fetches only the bar count required by the selected strategy (not the full backtest history).
 5. **EOD** — Closes positions and cancels trailing stops within `--eod-close-min` of the close.
 6. **Closed market** — Flattens once, then sleeps until just before `next_open` (per-symbol jitter spreads load when running many instances). Clock retries default to 60s–600s backoff.
