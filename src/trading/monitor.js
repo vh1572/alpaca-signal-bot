@@ -108,40 +108,82 @@ export class LiveMonitor {
   }
 
   async placeBuy() {
-    const { symbol, qty, dryRun } = this.config;
+    const { symbol, qty, minNotional, useNotional, dryRun } = this.config;
     if (dryRun) {
-      this.log(`[DRY-RUN] Would BUY ${qty} ${symbol}`);
+      if (useNotional) {
+        this.log(`[DRY-RUN] Would BUY $${minNotional} notional ${symbol}`);
+      } else {
+        this.log(`[DRY-RUN] Would BUY ${qty} ${symbol}`);
+      }
       return { id: 'dry-run-buy' };
     }
-    const order = await this.client.createOrder({
-      symbol,
-      qty: String(qty),
-      side: 'buy',
-      type: 'market',
-      time_in_force: 'day',
-    });
-    this.log(`BUY order placed: ${order.id} qty=${qty}`);
-    return order;
+    const order = useNotional
+      ? {
+          symbol,
+          notional: String(minNotional),
+          side: 'buy',
+          type: 'market',
+          time_in_force: 'day',
+        }
+      : {
+          symbol,
+          qty: String(qty),
+          side: 'buy',
+          type: 'market',
+          time_in_force: 'day',
+        };
+    const placed = await this.client.createOrder(order);
+    const label = useNotional ? `notional=$${minNotional}` : `qty=${qty}`;
+    this.log(`BUY order placed: ${placed.id} ${label}`);
+    return placed;
+  }
+
+  async positionQty() {
+    const pos = await this.getPosition();
+    if (!pos) return null;
+    const q = Math.abs(Number(pos.qty));
+    return q > 0 ? q : null;
   }
 
   async placeTrailingStop() {
-    const { symbol, qty, trailPercent, dryRun } = this.config;
+    const { symbol, qty, trailPercent, trailDollars, useNotional, dryRun } = this.config;
+    let sellQty = await this.positionQty();
+    if (!sellQty && !dryRun) {
+      this.log('No position qty for trailing stop — skipping');
+      return null;
+    }
     if (dryRun) {
-      this.log(`[DRY-RUN] Would place trailing_stop ${trailPercent}% on ${qty} ${symbol}`);
+      sellQty = sellQty ?? qty;
+      if (useNotional && trailDollars) {
+        this.log(`[DRY-RUN] Would place trailing_stop $${trailDollars} on ${sellQty} ${symbol}`);
+      } else {
+        this.log(`[DRY-RUN] Would place trailing_stop ${trailPercent}% on ${sellQty} ${symbol}`);
+      }
       return { id: 'dry-run-trail' };
     }
     await this.cancelTrailingOrders();
-    const order = await this.client.createOrder({
-      symbol,
-      qty: String(qty),
-      side: 'sell',
-      type: 'trailing_stop',
-      trail_percent: String(trailPercent),
-      time_in_force: 'gtc',
-    });
-    this.trailingOrderId = order.id;
-    this.log(`Trailing stop placed: ${order.id} (${trailPercent}%)`);
-    return order;
+    const order = useNotional && trailDollars
+      ? {
+          symbol,
+          qty: String(sellQty),
+          side: 'sell',
+          type: 'trailing_stop',
+          trail_price: String(trailDollars),
+          time_in_force: 'gtc',
+        }
+      : {
+          symbol,
+          qty: String(sellQty),
+          side: 'sell',
+          type: 'trailing_stop',
+          trail_percent: String(trailPercent),
+          time_in_force: 'gtc',
+        };
+    const placed = await this.client.createOrder(order);
+    this.trailingOrderId = placed.id;
+    const trailLabel = useNotional && trailDollars ? `$${trailDollars}` : `${trailPercent}%`;
+    this.log(`Trailing stop placed: ${placed.id} (${trailLabel}, qty=${sellQty})`);
+    return placed;
   }
 
   async flatten(reason) {
@@ -209,7 +251,12 @@ export class LiveMonitor {
 
   async run() {
     this.log(`Live monitor started — ${this.config.symbol}`);
-    this.log(`Poll every ${this.config.intervalMin} min | trail ${this.config.trailPercent}%`);
+    this.log(`Poll every ${this.config.intervalMin} min`);
+    if (this.config.useNotional) {
+      this.log(
+        `Entry $${this.config.minNotional} notional | trail $${this.config.trailDollars} (from backtest)`,
+      );
+    }
     this.log(`Bar window: keep ${this.maxBars}, need ≥${this.minBars} × 15Min bars`);
 
     let consecutiveErrors = 0;

@@ -75,6 +75,9 @@ export function parseConfig() {
   return {
     symbol,
     qty: parseNumber('--qty', 1),
+    minNotional: parseNumber('--min-notional', envNum('APCA_MIN_NOTIONAL', 0)),
+    trailMin: parseNumber('--trail-min', envNum('APCA_TRAIL_MIN', 1)),
+    trailMax: parseNumber('--trail-max', envNum('APCA_TRAIL_MAX', 10)),
     intervalMin: parseNumber('--interval-min', 15),
     trailPercent: parseNumber('--trail-percent', 2),
     backtestDays: parseNumber('--backtest-days', 60),
@@ -100,9 +103,12 @@ Required:
   SYMBOL                    Stock ticker (e.g. AAPL)
 
 Options:
-  --qty N                   Shares per buy (default: 1)
+  --qty N                   Shares per buy when --min-notional is 0 (default: 1)
+  --min-notional N          Buy at least $N per entry (default: 0 = use --qty)
+  --trail-min N             Min $ trail distance for backtest (default: 1)
+  --trail-max N             Max $ trail distance for backtest (default: 10)
   --interval-min N          Poll interval in minutes (default: 15)
-  --trail-percent P         Trailing stop % below high (default: 2)
+  --trail-percent P         Trailing stop % when --min-notional is 0 (default: 2)
   --backtest-days N         Historical days for backtest (default: 60)
   --eod-close-min N         Minutes before close to flatten (default: 15)
   --clock-retry-base-sec N  First clock retry delay in seconds (default: 60)

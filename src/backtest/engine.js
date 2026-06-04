@@ -22,19 +22,59 @@ function sessionDateEt(barTime) {
   }).format(new Date(barTime));
 }
 
+export function sharesForNotional(price, minNotional) {
+  if (!price || price <= 0) return 1;
+  return Math.max(1, Math.floor(minNotional / price));
+}
+
+export function trailDollarRange(trailMin, trailMax) {
+  const lo = Math.min(trailMin, trailMax);
+  const hi = Math.max(trailMin, trailMax);
+  const out = [];
+  for (let t = lo; t <= hi; t++) out.push(t);
+  return out;
+}
+
+export function notionalDisplayAmount(config) {
+  return config.minNotional > 0 ? config.minNotional : 500;
+}
+
 /**
  * Simulate long-only: one position at a time, trailing stop, flatten at EOD.
+ * Uses dollar trail when trailDollars is set; otherwise percent trail.
+ * Always tracks pnlOneShare (1 share) and pnlNotional ($500 or --min-notional).
  */
-function simulateStrategy(bars, strategy, { qty, trailPercent, eodCloseMin }) {
+function simulateStrategy(
+  bars,
+  strategy,
+  { minNotional, qty, trailDollars, trailPercent, eodCloseMin, displayNotional = 500 },
+) {
   const closes = barCloses(bars);
   const highs = barHighs(bars);
   const lows = barLows(bars);
   let cash = 0;
+  let cashOneShare = 0;
+  let cashNotional = 0;
   let position = null;
   let trades = 0;
   let wins = 0;
 
-  const trailFactor = 1 - trailPercent / 100;
+  const useDollarTrail = trailDollars != null && trailDollars > 0;
+  const trailFactor = 1 - (trailPercent ?? 2) / 100;
+  const notionalSize = minNotional > 0 ? minNotional : displayNotional;
+
+  function recordExit(exitPrice, entryPrice) {
+    const perShare = exitPrice - entryPrice;
+    const sizedQty =
+      minNotional > 0 ? sharesForNotional(entryPrice, minNotional) : qty;
+    const notionalQty = sharesForNotional(entryPrice, notionalSize);
+    const tradePnl = perShare * sizedQty;
+    cash += tradePnl;
+    cashOneShare += perShare;
+    cashNotional += perShare * notionalQty;
+    if (tradePnl > 0) wins++;
+    trades++;
+  }
 
   for (let i = 1; i < bars.length; i++) {
     const bar = bars[i];
@@ -52,32 +92,40 @@ function simulateStrategy(bars, strategy, { qty, trailPercent, eodCloseMin }) {
 
     if (position) {
       position.highWater = Math.max(position.highWater, bar.h);
-      const stop = position.highWater * trailFactor;
+      const stop = useDollarTrail
+        ? position.highWater - trailDollars
+        : position.highWater * trailFactor;
       const stopped = bar.l <= stop;
       if (stopped || eodFlatten) {
         const exitPrice = stopped ? stop : price;
-        const pnl = (exitPrice - position.entry) * qty;
-        cash += pnl;
-        if (pnl > 0) wins++;
-        trades++;
+        recordExit(exitPrice, position.entry);
         position = null;
       }
     }
 
     if (!position && !eodFlatten && strategy.detect(closes, highs, lows, i, strategy.params)) {
-      position = { entry: price, highWater: price, day: sessionDateEt(bar.t) };
+      position = {
+        entry: price,
+        highWater: price,
+        day: sessionDateEt(bar.t),
+      };
     }
   }
 
   if (position) {
     const last = bars[bars.length - 1].c;
-    const pnl = (last - position.entry) * qty;
-    cash += pnl;
-    if (pnl > 0) wins++;
-    trades++;
+    recordExit(last, position.entry);
   }
 
-  return { pnl: cash, trades, wins, winRate: trades ? wins / trades : 0 };
+  return {
+    pnl: cash,
+    pnlOneShare: cashOneShare,
+    pnlNotional: cashNotional,
+    notionalLabel: notionalSize,
+    trades,
+    wins,
+    winRate: trades ? wins / trades : 0,
+  };
 }
 
 export async function runBacktests(client, symbol, config) {
@@ -103,25 +151,84 @@ export async function runBacktests(client, symbol, config) {
 
   console.log(`Loaded ${bars.length} bars (${bars[0].t} → ${bars[bars.length - 1].t})\n`);
 
-  const results = strategies.map((strategy) => {
-    const result = simulateStrategy(bars, strategy, config);
-    return { strategy, ...result };
-  });
+  const useNotional = config.minNotional > 0;
+  const results = [];
 
-  results.sort((a, b) => b.pnl - a.pnl);
+  if (useNotional) {
+    const trails = trailDollarRange(config.trailMin, config.trailMax);
+    console.log(
+      `Backtesting ${strategies.length} strategies × ${trails.length} trail distances ($${trails[0]}–$${trails.at(-1)}) @ min $${config.minNotional} notional...\n`,
+    );
+    for (const strategy of strategies) {
+      for (const trailDollars of trails) {
+        const result = simulateStrategy(bars, strategy, {
+          minNotional: config.minNotional,
+          trailDollars,
+          eodCloseMin: config.eodCloseMin,
+          displayNotional: config.minNotional,
+        });
+        results.push({ strategy, trailDollars, ...result });
+      }
+    }
+  } else {
+    for (const strategy of strategies) {
+      const result = simulateStrategy(bars, strategy, {
+        qty: config.qty,
+        trailPercent: config.trailPercent,
+        eodCloseMin: config.eodCloseMin,
+        displayNotional: config.minNotional > 0 ? config.minNotional : 500,
+      });
+      results.push({ strategy, trailDollars: null, ...result });
+    }
+  }
+
+  results.sort((a, b) =>
+    config.minNotional > 0 ? b.pnlNotional - a.pnlNotional : b.pnl - a.pnl,
+  );
   return { results, best: results[0] };
 }
 
-export function printBacktestResults(results, best) {
-  console.log('── Backtest results (all strategies) ──');
-  for (const r of results) {
-    const marker = r.strategy.id === best.strategy.id ? ' ★' : '';
+export function formatPnlLine(r, config) {
+  const n = notionalDisplayAmount(config);
+  return (
+    `1 share: $${r.pnlOneShare.toFixed(2)} | $${n} notional: $${r.pnlNotional.toFixed(2)}` +
+    ` | trades: ${r.trades} | win rate: ${(r.winRate * 100).toFixed(1)}%`
+  );
+}
+
+export function formatFinalBacktestPnl(r, config) {
+  const n = notionalDisplayAmount(config);
+  return [
+    'Backtest P/L:',
+    `  1 share:       $${r.pnlOneShare.toFixed(2)}`,
+    `  $${n} notional: $${r.pnlNotional.toFixed(2)}`,
+    `  (${r.trades} trades, ${(r.winRate * 100).toFixed(1)}% wins)`,
+  ].join('\n');
+}
+
+export function printBacktestResults(results, best, config) {
+  const useNotional = config.minNotional > 0;
+  console.log('── Backtest results (top 10) ──');
+  for (const r of results.slice(0, 10)) {
+    const marker = r === best ? ' ★' : '';
+    const trailLabel = useNotional ? ` trail $${r.trailDollars}` : ` trail ${config.trailPercent}%`;
     console.log(
-      `${formatStrategy(r.strategy)}${marker}\n` +
-        `  P/L: $${r.pnl.toFixed(2)} | trades: ${r.trades} | win rate: ${(r.winRate * 100).toFixed(1)}%`,
+      `${formatStrategy(r.strategy)}${trailLabel}${marker}\n` +
+        `  ${formatPnlLine(r, config)}`,
     );
+  }
+  if (results.length > 10) {
+    console.log(`  … and ${results.length - 10} more combinations`);
   }
   console.log('\n── Selected for live trading ──');
   console.log(formatStrategy(best.strategy));
-  console.log(`Backtest P/L: $${best.pnl.toFixed(2)} (${best.trades} trades, ${(best.winRate * 100).toFixed(1)}% wins)\n`);
+  if (useNotional) {
+    console.log(`Min notional: $${config.minNotional}`);
+    console.log(`Trailing stop:  $${best.trailDollars} (from backtest range $${config.trailMin}–$${config.trailMax})`);
+  } else {
+    console.log(`Qty per entry:  ${config.qty} shares`);
+    console.log(`Trailing stop:  ${config.trailPercent}%`);
+  }
+  console.log(formatFinalBacktestPnl(best, config));
+  console.log('');
 }

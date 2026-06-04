@@ -34,7 +34,10 @@ cp .env.example .env
 # Paper trading, dry-run (no orders)
 node src/index.js AAPL --dry-run
 
-# Paper trading, live orders
+# Paper trading, $500 min entry, trail chosen from $1–$10 in backtest
+node src/index.js AAPL --min-notional 500 --dry-run
+
+# Legacy: fixed share count + percent trail
 node src/index.js AAPL --qty 2 --trail-percent 2.5
 
 # Options
@@ -47,9 +50,11 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `SYMBOL` | (required) | Ticker to trade |
-| `--qty` | `1` | Shares per entry |
+| `--min-notional` | `0` | Min **dollar** size per buy; enables $ trail backtest |
+| `--trail-min` / `--trail-max` | `1` / `10` | Backtest range for **$** trailing stop |
+| `--qty` | `1` | Shares per entry when `--min-notional` is 0 |
 | `--interval-min` | `15` | Poll interval (minutes) |
-| `--trail-percent` | `2` | Trailing stop distance (%) |
+| `--trail-percent` | `2` | Trailing stop % when `--min-notional` is 0 |
 | `--backtest-days` | `60` | History length for strategy selection |
 | `--eod-close-min` | `15` | Flatten when this many minutes remain before 16:00 ET |
 | `--dry-run` | off | Log only, no orders |
@@ -61,7 +66,7 @@ node src/index.js SYMBOL --qty 1 --interval-min 15 --trail-percent 2 \
 
 1. **Startup** — Downloads 15Min bars, backtests all strategies, prints P/L table and the **selected winner**.
 2. **Live** — Aligns checks to 15-minute boundaries during **9:30–16:00 ET** weekdays.
-3. **Entry** — On bullish signal with no position: market buy + trailing stop sell.
+3. **Entry** — On bullish signal: market buy (`notional` or `qty`) + trailing stop (`trail_price` $ or `trail_percent`).
 4. **Memory** — After backtest, live mode fetches only the bar count required by the selected strategy (not the full backtest history).
 5. **EOD** — Closes positions and cancels trailing stops within `--eod-close-min` of the close.
 6. **Closed market** — Flattens once, then sleeps until just before `next_open` (per-symbol jitter spreads load when running many instances). Clock retries default to 60s–600s backoff.

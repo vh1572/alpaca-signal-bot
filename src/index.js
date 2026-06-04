@@ -9,6 +9,8 @@ import { formatErrorReport } from './alpaca/errors.js';
 
 async function main() {
   const config = parseConfig();
+  const useNotional = config.minNotional > 0;
+
   const client = new AlpacaClient({
     apiBase: config.apiBase,
     dataBase: config.dataBase,
@@ -20,9 +22,14 @@ async function main() {
   console.log('  Alpaca Signal Bot');
   console.log('═══════════════════════════════════════════');
   console.log(`Symbol:     ${config.symbol}`);
-  console.log(`Qty:        ${config.qty}`);
+  if (useNotional) {
+    console.log(`Entry size: $${config.minNotional} min notional`);
+    console.log(`Trail:      $${config.trailMin}–$${config.trailMax} (backtest picks best)`);
+  } else {
+    console.log(`Qty:        ${config.qty} shares`);
+    console.log(`Trail stop: ${config.trailPercent}%`);
+  }
   console.log(`Interval:   ${config.intervalMin} minutes`);
-  console.log(`Trail stop: ${config.trailPercent}%`);
   console.log(`API:        ${config.apiBase}`);
   console.log(`Mode:       ${config.dryRun ? 'DRY-RUN (no orders)' : config.paper ? 'PAPER' : 'LIVE'}`);
   console.log('═══════════════════════════════════════════\n');
@@ -44,7 +51,11 @@ async function main() {
     console.error(formatErrorReport(err, `backtesting ${config.symbol}`));
     process.exit(1);
   }
-  printBacktestResults(results, best);
+
+  config.trailDollars = best.trailDollars ?? null;
+  config.useNotional = useNotional;
+
+  printBacktestResults(results, best, config);
   console.log(
     `Live memory window: ${requiredBarCount(best.strategy)} bars (15Min) for ${best.strategy.id}\n`,
   );
